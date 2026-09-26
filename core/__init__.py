@@ -1,0 +1,3 @@
+"""
+Core modules for Colab-to-Obsidian AI Knowledge Agent.
+"""

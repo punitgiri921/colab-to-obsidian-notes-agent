@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+config.json
+tracker.json
+scratch_test_output/
+desktop.ini
