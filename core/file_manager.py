@@ -239,9 +239,11 @@ def save_note(
     source_file: str = "",
     is_inplace_update: bool = False,
     existing_file_path: Optional[Path] = None,
+    add_sequence_prefix: bool = True,
 ) -> Path:
     """
     Save or in-place update a note in the target vault folder.
+    Supports auto sequence numbering (01_, 02_) and creates a .backup on merge.
     """
     if not notes_content or not notes_content.strip():
         raise ValueError("Cannot save empty note content.")
@@ -257,21 +259,37 @@ def save_note(
     )
 
     if is_inplace_update and existing_file_path and existing_file_path.is_file():
-        # Update existing note in place
+        # Safety backup before in-place update
+        try:
+            backup_path = existing_file_path.with_suffix(".backup")
+            backup_path.write_text(existing_file_path.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+
         existing_file_path.write_text(clean_content, encoding="utf-8")
         return existing_file_path
 
     # New note creation
     folder.mkdir(parents=True, exist_ok=True)
-    safe_name = make_safe_filename(filename)
-    target_path = folder / f"{safe_name}.md"
+    clean_stem = re.sub(r"^\d+_", "", filename).strip()
+    safe_name = make_safe_filename(clean_stem)
+
+    if add_sequence_prefix and not re.match(r"^\d+_", filename):
+        from core.vault_scanner import get_next_sequence_prefix
+        prefix = get_next_sequence_prefix(folder)
+        final_filename = f"{prefix}{safe_name}"
+    else:
+        final_filename = safe_name
+
+    target_path = folder / f"{final_filename}.md"
 
     # Avoid unintended overwrites
     if target_path.exists():
         counter = 1
         while target_path.exists():
-            target_path = folder / f"{safe_name} ({counter}).md"
+            target_path = folder / f"{final_filename} ({counter}).md"
             counter += 1
 
     target_path.write_text(clean_content, encoding="utf-8")
     return target_path
+

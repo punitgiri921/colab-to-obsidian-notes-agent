@@ -4,15 +4,18 @@ CustomTkinter Desktop GUI for Colab-to-Obsidian AI Knowledge Agent.
 Features:
   - Dual Mode: Single Notebook (.ipynb) vs Batch Folder (Recursive)
   - Automatic exercise-solution notebook pairing
-  - Smart vault subfolder suggestion with Browse override
+  - Smart semantic auto-routing into techstack subfolders (02_Python/02_Data Analysis (Pandas), etc.)
+  - Sequential numbered note generation (01_, 02_, 03_) following curriculum order
+  - Fast LLM-powered semantic decision gate for intelligent in-place merge vs new note creation
+  - Dedicated "🗂️ Organize & Number Vault Notes" action to batch-clean existing notes
   - Base64 plot extraction to 99_Assets/ with Obsidian embedding
-  - Intelligent in-place sectional merge vs new note creation
   - Live progress bar, status notifications, and scrolling log console
   - Open Note & Open Vault Folder actions upon completion
   - Fully threaded background processing for a smooth UI
 """
 
 import os
+import re
 import subprocess
 import threading
 import traceback
@@ -48,10 +51,13 @@ from core.notes_generator import (
     sanitize_notes,
 )
 from core.vault_scanner import (
+    fast_semantic_decision_gate,
     find_matching_note,
     get_default_vault_path,
     get_vault_subfolders,
-    suggest_target_subfolder,
+    organize_and_number_vault_notes,
+    scan_existing_notes,
+    smart_semantic_route,
 )
 
 # Theme configuration
@@ -67,8 +73,8 @@ class App(ctk.CTk):
 
         # Window setup
         self.title("Colab-to-Obsidian AI Knowledge Agent")
-        self.geometry("780x720")
-        self.minsize(680, 600)
+        self.geometry("820x760")
+        self.minsize(700, 620)
         self.resizable(True, True)
 
         # Internal state
@@ -97,7 +103,7 @@ class App(ctk.CTk):
 
         header_sub = ctk.CTkLabel(
             self.main_frame,
-            text="Autonomous CS50-grade Obsidian study notes from Jupyter & Google Colab notebooks",
+            text="Autonomous CS50-grade Obsidian study notes with Semantic Techstack Routing & Numbering",
             font=ctk.CTkFont(size=12),
             text_color="gray60",
         )
@@ -199,7 +205,7 @@ class App(ctk.CTk):
         # Vault Destination Selector
         lbl_vault = ctk.CTkLabel(
             self.main_frame,
-            text="Obsidian Vault Destination",
+            text="Obsidian Vault Root Directory",
             font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
         )
@@ -210,7 +216,7 @@ class App(ctk.CTk):
 
         self.vault_entry = ctk.CTkEntry(
             row_vault,
-            placeholder_text="Target Obsidian Vault / Subfolder...",
+            placeholder_text="Target Obsidian Vault Root...",
             height=38,
             font=ctk.CTkFont(size=12),
         )
@@ -227,11 +233,19 @@ class App(ctk.CTk):
 
         # Options Row
         row_opts = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        row_opts.pack(fill="x", pady=(0, 10))
+        row_opts.pack(fill="x", pady=(2, 8))
+
+        self.autoroute_cb = ctk.CTkCheckBox(
+            row_opts,
+            text="Smart Auto-Route into Techstack Subfolders & Number (01_, 02_)",
+            font=ctk.CTkFont(size=12),
+        )
+        self.autoroute_cb.select()
+        self.autoroute_cb.pack(side="left", padx=(0, 14))
 
         self.merge_cb = ctk.CTkCheckBox(
             row_opts,
-            text="Intelligent in-place merge if matching topic note exists in vault",
+            text="Semantic in-place merge if matching topic note exists",
             font=ctk.CTkFont(size=12),
         )
         self.merge_cb.select()
@@ -245,7 +259,7 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._start_processing,
         )
-        self.btn_create.pack(fill="x", pady=(2, 10))
+        self.btn_create.pack(fill="x", pady=(2, 8))
 
         # Status and Progress Area
         status_box = ctk.CTkFrame(self.main_frame)
@@ -270,14 +284,14 @@ class App(ctk.CTk):
         )
         self.log_console.pack(fill="both", expand=True, padx=14, pady=(0, 8))
 
-        # Action Buttons Row (Initially disabled/hidden until complete)
+        # Action Buttons Row
         self.actions_row = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.actions_row.pack(fill="x", pady=(8, 0))
 
         self.btn_open_note = ctk.CTkButton(
             self.actions_row,
             text="📖 Open Note",
-            width=140,
+            width=130,
             height=36,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#2b7a4b",
@@ -290,15 +304,26 @@ class App(ctk.CTk):
         self.btn_open_folder = ctk.CTkButton(
             self.actions_row,
             text="📂 Open Vault Folder",
-            width=160,
+            width=150,
             height=36,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#3a5a80",
             hover_color="#2a4260",
             command=self._open_vault_folder,
         )
-        self.btn_open_folder.pack(side="left")
-        self.btn_open_folder.configure(state="disabled")
+        self.btn_open_folder.pack(side="left", padx=(0, 8))
+
+        self.btn_organize = ctk.CTkButton(
+            self.actions_row,
+            text="🗂️ Organize & Number Vault Notes",
+            width=230,
+            height=36,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#634882",
+            hover_color="#4b3563",
+            command=self._on_organize_notes,
+        )
+        self.btn_organize.pack(side="right")
 
     def _init_defaults(self):
         """Set default initial folder values from config or system discovery."""
@@ -310,6 +335,7 @@ class App(ctk.CTk):
 
         self._log("System initialized. Target Vault: " + last_vault)
         self._log("Azure OpenAI Deployment: gpt-5-mini (Active)")
+        self._log("Smart Techstack Auto-Routing & Sequential Numbering: ENABLED")
 
     def _log(self, message: str):
         """Append a message to the live log console."""
@@ -344,9 +370,6 @@ class App(ctk.CTk):
             self.single_entry.insert(0, str(p))
             set_last_notebook_folder(str(p.parent))
 
-            # Auto-suggest subfolder if vault is default
-            self._auto_route_vault(p.stem)
-
     def _browse_batch_folder(self):
         """Open folder dialog for choosing folder of notebooks."""
         init_dir = get_last_notebook_folder()
@@ -362,10 +385,10 @@ class App(ctk.CTk):
             set_last_notebook_folder(str(p))
 
     def _browse_vault_folder(self):
-        """Open folder dialog for selecting Obsidian Vault / subfolder."""
+        """Open folder dialog for selecting Obsidian Vault root."""
         init_dir = self.vault_entry.get().strip() or str(get_default_vault_path())
         chosen = filedialog.askdirectory(
-            title="Select Target Vault Folder",
+            title="Select Obsidian Vault Root",
             initialdir=init_dir,
         )
         if chosen:
@@ -373,14 +396,21 @@ class App(ctk.CTk):
             self.vault_entry.insert(0, chosen)
             set_last_vault_folder(chosen)
 
-    def _auto_route_vault(self, notebook_stem: str):
-        """Suggest destination subfolder in vault based on notebook name."""
-        current_vault = Path(self.vault_entry.get().strip() or get_default_vault_path())
-        suggested = suggest_target_subfolder(current_vault, notebook_stem)
-        if suggested.exists() and suggested != current_vault:
-            self.vault_entry.delete(0, "end")
-            self.vault_entry.insert(0, str(suggested))
-            self._log(f"Auto-suggested target folder: {suggested.name}")
+    def _on_organize_notes(self):
+        """Organize loose notes in vault root into techstack folders with sequential numbering."""
+        vault_root = Path(self.vault_entry.get().strip() or get_default_vault_path())
+        self._log(f"\n🔍 Scanning vault root for loose notes: {vault_root}")
+
+        def worker():
+            res = organize_and_number_vault_notes(vault_root, progress_callback=self._log)
+            if res.get("success"):
+                count = res.get("moved_count", 0)
+                self._log(f"🎉 Successfully organized and numbered {count} notes into techstack folders!")
+                self._set_status(f"Organized {count} notes into subfolders.")
+            else:
+                self._log(f"❌ Error organizing notes: {res.get('error')}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _start_processing(self):
         """Validate inputs and launch background worker thread."""
@@ -415,17 +445,17 @@ class App(ctk.CTk):
         thread.start()
 
     def _process_worker(self):
-        """Worker thread executing notebook parsing, AI synthesis, and saving."""
+        """Worker thread executing notebook parsing, semantic routing, AI synthesis, and saving."""
         try:
-            vault_dest = Path(self.vault_entry.get().strip())
-            # Find base vault root for 99_Assets (find directory containing 99_Assets or top-level)
-            vault_root = vault_dest
-            for parent in [vault_dest] + list(vault_dest.parents):
+            vault_root = Path(self.vault_entry.get().strip())
+            # Find base vault root for 99_Assets
+            for parent in [vault_root] + list(vault_root.parents):
                 if (parent / "99_Assets").exists() or (parent / ".obsidian").exists():
                     vault_root = parent
                     break
 
             is_single = "Single" in self.mode_selector.get()
+            use_autoroute = bool(self.autoroute_cb.get())
             should_merge = bool(self.merge_cb.get())
             skip_processed = bool(self.skip_processed_cb.get())
 
@@ -435,12 +465,10 @@ class App(ctk.CTk):
 
             if is_single:
                 target_file = Path(self.single_entry.get().strip())
-                # Discover if this single file has a paired solutions/exercise notebook
                 parent_dir = target_file.parent
                 all_in_folder = list(parent_dir.glob("*.ipynb"))
                 pairs = find_notebook_pairs(all_in_folder)
                 
-                # Find matching pair entry
                 target_pair = None
                 for p in pairs:
                     if p["primary_path"] == target_file or p.get("exercise_path") == target_file:
@@ -499,13 +527,39 @@ class App(ctk.CTk):
                 # 3. Build unified content payload
                 payload = build_dual_ingestion_payload(ex_data, sol_data)
 
-                # 4. Check for existing note in destination for in-place merge
+                # 4. Determine Destination Folder (Auto-Route vs Direct)
+                if use_autoroute:
+                    preview_text = ""
+                    if ex_data and ex_data.get("cells"):
+                        preview_text += " ".join(c.get("content", "") for c in ex_data["cells"][:3] if c["type"] == "markdown")
+                    if sol_data.get("cells"):
+                        preview_text += " ".join(c.get("content", "") for c in sol_data["cells"][:3] if c["type"] == "markdown")
+                    target_folder = smart_semantic_route(vault_root, sol_data["suggested_title"], preview_text)
+                    rel_target = target_folder.relative_to(vault_root) if target_folder != vault_root else "Root"
+                    self._log(f"   🧭 Auto-Routed Destination: {rel_target}")
+                else:
+                    target_folder = vault_root
+
+                target_folder.mkdir(parents=True, exist_ok=True)
+
+                # 5. Semantic Decision Gate (Merge vs Create New)
                 existing_match = None
                 if should_merge:
-                    existing_match = find_matching_note(sol_data["suggested_title"], vault_dest)
+                    candidates = scan_existing_notes(target_folder)
+                    if candidates:
+                        decision = fast_semantic_decision_gate(
+                            notebook_title=sol_data["suggested_title"],
+                            notebook_summary=payload[:1500],
+                            candidate_notes=candidates,
+                            ai_client=self._ai_client,
+                            progress_callback=self._log,
+                        )
+                        if decision.get("action") == "MERGE_EXISTING":
+                            existing_match = decision.get("matched_path")
+                            self._log(f"   🔄 Semantic Match: Expanding '{existing_match.name}'")
 
                 if existing_match:
-                    self._log(f"   🔄 Matching note detected: '{existing_match.name}'. Performing In-Place Merge...")
+                    self._log(f"   🔄 Performing In-Place Sectional Merge on '{existing_match.name}'...")
                     existing_text = existing_match.read_text(encoding="utf-8")
                     merged_content = perform_intelligent_merge(
                         existing_note_content=existing_text,
@@ -514,7 +568,7 @@ class App(ctk.CTk):
                         progress_callback=self._log,
                     )
                     final_path = save_note(
-                        folder=vault_dest,
+                        folder=target_folder,
                         filename=existing_match.stem,
                         notes_content=merged_content,
                         source_file=solution_file.name,
@@ -535,10 +589,11 @@ class App(ctk.CTk):
                     clean_notes = sanitize_notes(raw_notes)
                     note_title = extract_title_from_notes(clean_notes, fallback=sol_data["suggested_title"])
                     final_path = save_note(
-                        folder=vault_dest,
+                        folder=target_folder,
                         filename=note_title,
                         notes_content=clean_notes,
                         source_file=solution_file.name,
+                        add_sequence_prefix=use_autoroute,
                     )
                     self._log(f"   ✅ Created: {final_path.name}")
 
@@ -549,7 +604,7 @@ class App(ctk.CTk):
                 completed_count += 1
                 self.progress_bar.set(completed_count / total_items)
 
-            self._set_status("All notes successfully generated!")
+            self._set_status("All notes successfully processed!")
             self._log("\n🎉 Generation complete! Study notes are ready in Obsidian.")
             self.btn_open_note.configure(state="normal")
             self.btn_open_folder.configure(state="normal")
@@ -572,10 +627,10 @@ class App(ctk.CTk):
 
     def _open_vault_folder(self):
         """Open the target vault destination folder in Windows Explorer."""
-        vault_dest = Path(self.vault_entry.get().strip())
-        if vault_dest.exists():
+        vault_root = Path(self.vault_entry.get().strip() or get_default_vault_path())
+        if vault_root.exists():
             try:
-                os.startfile(str(vault_dest))
+                os.startfile(str(vault_root))
             except Exception as e:
                 self._log(f"Could not open folder: {e}")
 
