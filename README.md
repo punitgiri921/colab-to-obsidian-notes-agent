@@ -17,7 +17,24 @@
    - Automatically detects companion problem and solution notebooks (e.g. `section01_NumPy.ipynb` + `section01_NumPy_solutions.ipynb`).
    - Unifies student challenge prompts with complete implementations into a single comprehensive note.
 
-3. **8-Part Obsidian Study Note Standard**:
+3. **Smart Semantic Auto-Routing & Sequential Numbering (`01_`, `02_`, `03_`)**:
+   - Evaluates the conceptual DNA of each notebook (Markdown narrative, imports, and YAML tags).
+   - Automatically directs notes into the appropriate techstack subfolder:
+     - `NumPy`, `Pandas`, `Matplotlib`, `Seaborn`, `EDA` $\rightarrow$ `02_Python/02_Data Analysis (Pandas)/`
+     - `Pure Python`, `Data Structures`, `Functions` $\rightarrow$ `02_Python/01_Core Python/`
+     - `SQL Queries`, `CTEs`, `Window Functions` $\rightarrow$ `01_SQL/01_Concepts/`
+   - Automatically detects the highest sequence number in the target subfolder and assigns clean sequential prefixes (`02_...`, `03_...`).
+
+4. **Fast LLM Semantic Decision Gate**:
+   - Executes a lightweight ~1-second pre-flight call to `gpt-5-mini` before synthesis.
+   - Accurately compares topic boundaries between the incoming notebook and existing folder notes.
+   - Decides whether to **expand an existing note** (`MERGE_EXISTING`) or create a **distinct note** (`CREATE_NEW`).
+
+5. **One-Click Vault Batch Organizer**:
+   - Dedicated `🗂️ Organize & Number Vault Notes` action in the GUI.
+   - Scans the root vault for loose notes, automatically routes them into their proper techstack subfolders, assigns clean sequential numbers, and updates `tracker.json`.
+
+6. **8-Part Obsidian Study Note Standard**:
    - **YAML Frontmatter**: Dataview compatible (`title`, `topic`, `difficulty`, `skills`, `tags`, `source`, `source_file`, `created`).
    - **Title & Executive Metadata Card**: Abstract callout (`> [!ABSTRACT]`) and domain competency table.
    - **📑 Clickable Table of Contents**: Dynamic `[[#Exact Heading Title]]` links.
@@ -27,16 +44,16 @@
    - **❓ Active Recall & Practice Questions**: Collapsible callouts (`> [!question]- 1. ...?`).
    - **🏁 Summing Up**: Bulleted key takeaways.
 
-4. **Matplotlib & Seaborn Asset Pipeline**:
+7. **Matplotlib & Seaborn Asset Pipeline**:
    - Automatically extracts embedded Base64 PNG plots.
    - Saves figures directly into your vault at `G:\My Drive\04_Obsedian\99_Assets\` using unique hashes (`[Stem]_fig[N]_[Hash].png`).
    - Embeds figures cleanly via `![[image.png]]` syntax alongside their generating code.
 
-5. **Intelligent In-Place Sectional Merge**:
-   - Scans your Obsidian vault for matching topic notes.
-   - If an existing note is found, an AI-powered sectional merge weaves new concepts, code, and flashcards into existing sections without losing custom notes or links.
+8. **Non-Destructive In-Place Merge with Safety Backups**:
+   - Preserves all original insights, custom text, and existing `[[WikiLinks]]`.
+   - Automatically creates a `.backup` snapshot before any existing note is updated in-place.
 
-6. **Stateful Checkpointing**:
+9. **Stateful Checkpointing**:
    - Maintains `tracker.json` with SHA-256 hashes to prevent redundant API token consumption.
 
 ---
@@ -52,6 +69,7 @@ flowchart TD
         WorkerThread["Spawn Background Worker Thread (_process_worker)"]
         LiveLog["Stream Real-time Logs & Update Progress Bar"]
         CompletionUI["Enable 'Open Note' & 'Open Vault Folder' Buttons"]
+        OrganizeBtn["'🗂️ Organize & Number Vault Notes' Action Button"]
     end
 
     subgraph Parsing_Pipeline ["🧹 Ingestion & Preprocessing (core/notebook_parser.py)"]
@@ -66,9 +84,9 @@ flowchart TD
         SavePlots["save_extracted_images()<br/>Writes PNGs to G:\\My Drive\\04_Obsedian\\99_Assets\\<br/>Named: [Stem]_fig[N]_[Hash].png"]
     end
 
-    subgraph Vault_Intelligence ["🔍 Taxonomy & Matching (core/vault_scanner.py)"]
-        AutoRoute["suggest_target_subfolder()<br/>Routes to 02_Python/02_Data Analysis (Pandas), etc."]
-        CheckMatch{"find_matching_note()<br/>Does a note on this topic exist?"}
+    subgraph Vault_Intelligence ["🔍 Semantic Routing & Decision Gate (core/vault_scanner.py)"]
+        AutoRoute["smart_semantic_route()<br/>Inspects note DNA and maps to 02_Python/02_Data Analysis, etc."]
+        DecisionGate{"fast_semantic_decision_gate()<br/>Mini LLM call: Does this notebook expand an existing note?"}
     end
 
     subgraph AI_Synthesis ["🧠 Azure OpenAI Engine (core/ai_client.py)"]
@@ -78,8 +96,9 @@ flowchart TD
 
     subgraph Sanitization_Storage ["💾 Sanitization & Storage (core/file_manager.py)"]
         Sanitize["sanitize_notes()<br/>• Quoted Mermaid node labels<br/>• Dynamic clickable Table of Contents"]
+        Numbering["Assign Next Sequence Number<br/>(e.g. 02_, 03_) in target subfolder"]
         Frontmatter["merge_content_with_frontmatter()<br/>Injects unified Obsidian YAML metadata"]
-        DiskWrite["save_note()<br/>Writes/Updates UTF-8 .md in Vault"]
+        BackupWrite["save_note()<br/>Creates .backup on merge, writes UTF-8 .md in Vault"]
         UpdateTracker["record_processed_notebook()<br/>Stores SHA-256 hash in tracker.json"]
     end
 
@@ -89,32 +108,32 @@ flowchart TD
     HashCheck -->|No / Single File| ASTClean
     ASTClean --> SavePlots
     ASTClean --> PayloadBuild
-    PayloadBuild --> AutoRoute --> CheckMatch
-    CheckMatch -->|No Match| NewGen
-    CheckMatch -->|Existing Note Found| MergeGen
+    PayloadBuild --> AutoRoute --> DecisionGate
+    DecisionGate -->|CREATE_NEW| NewGen
+    DecisionGate -->|MERGE_EXISTING| MergeGen
     NewGen --> Sanitize
     MergeGen --> Sanitize
-    Sanitize --> Frontmatter --> DiskWrite --> UpdateTracker
-    DiskWrite --> LiveLog
+    Sanitize --> Numbering --> Frontmatter --> BackupWrite --> UpdateTracker
+    BackupWrite --> LiveLog
     UpdateTracker --> CompletionUI
+    OrganizeBtn -.->|One-Click Batch Clean| AutoRoute
 ```
 
 ### Detailed Lifecycle Steps:
 1. **Selection & Dispatch**: User picks a notebook file or folder in CustomTkinter. The UI validates paths and launches a non-blocking daemon thread so the interface never freezes.
-2. **Dual-Ingestion Pairing**: The parser inspects filenames. If `section01_NumPy.ipynb` and `section01_NumPy_solutions.ipynb` are both present, they are bundled together.
+2. **Dual-Ingestion Pairing**: The parser inspects filenames. If `section01_NumPy.ipynb` and `section01_NumPy_solutions.ipynb` are both present, they are bundled together into a single note entity.
 3. **AST Cleaning & Plot Extraction**: The cleaner traverses notebook cells via `nbformat`. Ephemeral commands (`!pip`, `%matplotlib inline`) are commented out, large array outputs are truncated, and embedded Base64 PNG plots are decoded and saved directly into `99_Assets/`.
-4. **Knowledge Discovery & Routing**: The vault scanner identifies the subject matter and routes the destination to the corresponding folder (e.g. `02_Python/02_Data Analysis (Pandas)`). It then performs fuzzy title and topic matching against existing notes.
-5. **AI Synthesis / Sectional Merge**:
-   - If an existing note is found: Azure OpenAI (`gpt-5-mini`) performs a non-destructive merge, weaving in new code, diagrams, and flashcards while preserving custom user text and `[[WikiLinks]]`.
-   - If no note exists: Azure OpenAI synthesizes a brand-new study note following the 8-part CS50 schema.
-6. **Sanitization & Writing**: The generated markdown passes through `sanitize_notes` to guarantee valid Mermaid syntax (double-quoted node labels, cleaned connectors) and injects a dynamic clickable Table of Contents linking directly to all headings.
-7. **State Tracking**: File hashes and output paths are written to `tracker.json` to prevent re-processing in subsequent runs.
+4. **Smart Semantic Routing**: `smart_semantic_route` evaluates the notebook's full conceptual DNA (imports, topic tags, markdown text) and directs the note to the appropriate subfolder (e.g. `02_Python/02_Data Analysis (Pandas)/`).
+5. **Fast Semantic Decision Gate**: A lightweight, ~1-second structured call to `gpt-5-mini` compares the incoming notebook with candidate notes in the target folder to determine whether it expands an existing note or represents a distinct topic.
+6. **AI Synthesis / Sectional Merge**:
+   - If `MERGE_EXISTING`: Azure OpenAI performs a non-destructive merge, weaving in new code, diagrams, and flashcards while preserving custom user text and `[[WikiLinks]]`.
+   - If `CREATE_NEW`: Azure OpenAI synthesizes a brand-new study note following the 8-part CS50 schema.
+7. **Sequential Numbering & Sanitization**: The next sequential number (e.g., `02_`, `03_`) is assigned. The generated markdown passes through `sanitize_notes` to guarantee valid Mermaid syntax and injects a dynamic clickable Table of Contents linking directly to all headings.
+8. **State Tracking**: File hashes and updated destination paths are written to `tracker.json` to prevent re-processing in subsequent runs.
 
 ---
 
 ## 🗂️ Descriptive File & Module Breakdown
-
-Below is a detailed guide to every file in the codebase and its exact responsibility:
 
 ```text
 V_Colab-to-Obsidian Notes/
@@ -128,14 +147,17 @@ V_Colab-to-Obsidian Notes/
 ├── .env                        # Local Azure OpenAI deployment secrets (git-ignored)
 ├── .gitignore                  # Git exclusion rules for .venv, .env, and caches
 │
+├── assets/
+│   └── azure_openai_monitoring.png # Telemetry dashboard screenshot
+│
 ├── core/
 │   ├── __init__.py             # Package marker for core modules
 │   ├── ai_client.py            # Azure OpenAI SDK wrapper with retry logic & reasoning controls
 │   ├── notebook_parser.py      # AST cleaner, image extractor & exercise-solution pairer
-│   ├── vault_scanner.py        # Obsidian vault taxonomy indexer & fuzzy note matcher
+│   ├── vault_scanner.py        # Semantic auto-routing, sequential numbering & decision gate
 │   ├── notes_generator.py      # Master CS50 prompt definitions, Mermaid sanitizer & TOC builder
 │   ├── diff_merger.py          # AI sectional merge engine for updating existing notes
-│   └── file_manager.py         # YAML frontmatter injection, asset writer & state tracker
+│   └── file_manager.py         # YAML frontmatter injection, asset writer, backup & state tracker
 │
 ├── gui/
 │   ├── __init__.py             # Package marker for GUI components
@@ -173,11 +195,12 @@ V_Colab-to-Obsidian Notes/
   - Implements exponential backoff on HTTP 429 rate limits with live UI status notifications.
 
 #### `core/vault_scanner.py`
-- **Purpose**: Inspects the Obsidian vault to ensure organized filing and avoid duplicate notes.
+- **Purpose**: Semantic classification, destination routing, sequential numbering, and batch vault organizing.
 - **Key Functions**:
-  - `get_vault_subfolders(vault_path)`: Recursively indexes all non-hidden folders in `G:\My Drive\04_Obsedian`.
-  - `suggest_target_subfolder(vault_path, title, preview)`: Keyword-driven auto-router that maps notebooks into `02_Python/02_Data Analysis (Pandas)`, `02_Python/01_Core Python`, `01_SQL/01_Concepts`, etc.
-  - `find_matching_note(title, target_folder)`: Fuzzy Jaccard matcher that detects whether a note covering the same topic already exists in the folder.
+  - `smart_semantic_route(vault_path, title, preview)`: Maps notes to `02_Python/02_Data Analysis (Pandas)`, `02_Python/01_Core Python`, `01_SQL/01_Concepts`, etc.
+  - `get_next_sequence_prefix(folder)`: Scans folder for `01_`, `02_`, etc. and returns the next two-digit prefix.
+  - `fast_semantic_decision_gate(...)`: Fast structured LLM call evaluating topic boundaries for `MERGE_EXISTING` vs `CREATE_NEW`.
+  - `organize_and_number_vault_notes(vault_root)`: One-click batch organizer that moves loose notes into techstack folders with curriculum numbering and updates `tracker.json`.
 
 #### `core/notes_generator.py`
 - **Purpose**: Enforces educational pedagogy, Obsidian formatting, and syntax reliability.
@@ -193,11 +216,11 @@ V_Colab-to-Obsidian Notes/
   - `perform_intelligent_merge(existing_text, new_payload, ai_client)`: Uses an AI prompt instructing the model to weave new concepts, code examples, edge cases, and flashcards into their corresponding sections without altering existing user insights or breaking `[[WikiLinks]]`.
 
 #### `core/file_manager.py`
-- **Purpose**: Handles all local filesystem I/O, frontmatter generation, and state tracking.
+- **Purpose**: Handles all local filesystem I/O, frontmatter generation, safety backups, and state tracking.
 - **Key Functions**:
   - `save_extracted_images(images, vault_path)`: Writes decoded Base64 PNG plots directly into `G:\My Drive\04_Obsedian\99_Assets\`.
   - `generate_frontmatter(...)` & `merge_content_with_frontmatter(...)`: Ensures a single, clean YAML frontmatter block for Dataview.
-  - `save_note(...)`: Saves or updates markdown files safely with duplicate filename avoidance.
+  - `save_note(...)`: Saves or updates markdown files safely with sequential numbering and creates `.backup` copies on in-place updates.
   - `load_tracker()` / `record_processed_notebook(...)`: Manages `tracker.json` state machine.
   - `load_config()` / `save_config(...)`: Remembers user's selected vault and notebook directories in `config.json`.
 
@@ -205,8 +228,8 @@ V_Colab-to-Obsidian Notes/
 - **Purpose**: The interactive desktop application built with CustomTkinter.
 - **Key Features**:
   - Segmented button for switching between **Single Notebook** and **Batch Folder** modes.
-  - Smart vault destination field that pre-fills `G:\My Drive\04_Obsedian` and auto-suggests subfolders when a notebook is loaded.
-  - Checkboxes for skipping already-processed notebooks and toggling in-place merge.
+  - Toggle checkboxes: `[x] Smart Auto-Route into Techstack Subfolders & Number (01_, 02_)` and `[x] Semantic in-place merge`.
+  - Dedicated `🗂️ Organize & Number Vault Notes` action button.
   - Multithreaded execution engine (`_process_worker`) ensuring UI responsiveness.
   - Real-time scrolling log console and progress bar.
   - Post-processing **"Open Note"** and **"Open Vault Folder"** actions using `os.startfile`.
@@ -264,4 +287,3 @@ You can run individual verification test suites for each phase:
 # Phase 3: Note Synthesizer & Sectional Merge
 .\.venv\Scripts\python.exe test_phase3.py
 ```
-
