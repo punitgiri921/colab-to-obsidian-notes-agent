@@ -65,11 +65,29 @@ def get_next_sequence_prefix(folder: Path) -> str:
     return f"{highest + 1:02d}_"
 
 
-def smart_semantic_route(vault_path: Path, notebook_title: str, notebook_content_preview: str = "") -> Path:
+def smart_semantic_route(
+    vault_path: Path,
+    notebook_title: str,
+    notebook_content_preview: str = "",
+    file_type: str = "notebook"
+) -> Path:
     """
-    Smart auto-router that maps a notebook into its proper techstack subfolder
-    based on comprehensive conceptual DNA (title, imports, topic tags, markdown).
+    Smart auto-router that maps a notebook or source file into its proper techstack subfolder
+    based on comprehensive conceptual DNA (file type, title, imports, topic tags, markdown).
     """
+    # Explicit SQL file routing
+    if file_type.lower() == "sql":
+        sql_base = vault_path / "01_SQL"
+        if (sql_base / "01_Concepts").exists():
+            return sql_base / "01_Concepts"
+        elif sql_base.exists():
+            # Return first available subfolder or base
+            subdirs = [d for d in sql_base.iterdir() if d.is_dir() and not d.name.startswith(".")]
+            if subdirs:
+                return subdirs[0]
+            return sql_base
+        return sql_base / "01_Concepts"
+
     text = f"{notebook_title} {notebook_content_preview}".lower()
 
     # 1. End-to-end projects

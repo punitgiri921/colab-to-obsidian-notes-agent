@@ -6,3 +6,5 @@ config.json
 tracker.json
 scratch_test_output/
 desktop.ini
+*.code-workspace
+.vscode/

@@ -39,16 +39,18 @@ from core.file_manager import (
     set_last_notebook_folder,
     set_last_vault_folder,
 )
-from core.notebook_parser import (
-    build_dual_ingestion_payload,
-    find_notebook_pairs,
-    get_file_hash,
-    parse_notebook,
-)
 from core.notes_generator import (
     extract_title_from_notes,
     get_colab_system_prompt,
+    get_sql_system_prompt,
+    get_system_prompt_for_file,
     sanitize_notes,
+)
+from core.source_parser import (
+    build_dual_ingestion_payload,
+    find_source_pairs,
+    get_file_hash,
+    parse_source_file,
 )
 from core.vault_scanner import (
     fast_semantic_decision_gate,
@@ -112,23 +114,23 @@ class App(ctk.CTk):
         # Mode selector
         self.mode_selector = ctk.CTkSegmentedButton(
             self.main_frame,
-            values=["📓 Single Notebook (.ipynb)", "📁 Batch Folder (Recursive)"],
+            values=["📄 Single File (.ipynb / .sql / .py)", "📁 Batch Folder (Recursive)"],
             command=self._on_mode_changed,
             font=ctk.CTkFont(size=13, weight="bold"),
             height=36,
         )
-        self.mode_selector.set("📓 Single Notebook (.ipynb)")
+        self.mode_selector.set("📄 Single File (.ipynb / .sql / .py)")
         self.mode_selector.pack(fill="x", pady=(0, 12))
 
         # Dynamic input container
         self.input_container = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.input_container.pack(fill="x", pady=(0, 10))
 
-        # 1. Single Notebook Input Frame
+        # 1. Single Source File Input Frame
         self.single_frame = ctk.CTkFrame(self.input_container, fg_color="transparent")
         lbl_single = ctk.CTkLabel(
             self.single_frame,
-            text="Select Colab / Jupyter Notebook",
+            text="Select Source File (.ipynb, .sql, .py)",
             font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
         )
@@ -139,7 +141,7 @@ class App(ctk.CTk):
 
         self.single_entry = ctk.CTkEntry(
             row_single,
-            placeholder_text="Choose a .ipynb notebook...",
+            placeholder_text="Choose a .ipynb, .sql, or .py source file...",
             height=38,
             font=ctk.CTkFont(size=12),
         )
@@ -156,7 +158,7 @@ class App(ctk.CTk):
 
         self.single_hint = ctk.CTkLabel(
             self.single_frame,
-            text="✨ Auto-detects and pairs companion exercise & solution notebooks",
+            text="✨ Auto-detects and pairs companion exercise & solution files (.ipynb, .sql, .py)",
             font=ctk.CTkFont(size=11),
             text_color="gray60",
             anchor="w",
@@ -356,12 +358,18 @@ class App(ctk.CTk):
             self.batch_frame.pack(fill="x")
 
     def _browse_single_file(self):
-        """Open file dialog for choosing a single .ipynb file."""
+        """Open file dialog for choosing a single source file (.ipynb, .sql, .py)."""
         init_dir = get_last_notebook_folder()
         chosen = filedialog.askopenfilename(
-            title="Select Notebook File",
+            title="Select Source File",
             initialdir=init_dir,
-            filetypes=[("Jupyter Notebooks", "*.ipynb"), ("All Files", "*.*")],
+            filetypes=[
+                ("All Supported Files", "*.ipynb;*.sql;*.py"),
+                ("SQL Scripts (*.sql)", "*.sql"),
+                ("Jupyter Notebooks (*.ipynb)", "*.ipynb"),
+                ("Python Scripts (*.py)", "*.py"),
+                ("All Files", "*.*"),
+            ],
         )
         if chosen:
             p = Path(chosen)
@@ -371,10 +379,10 @@ class App(ctk.CTk):
             set_last_notebook_folder(str(p.parent))
 
     def _browse_batch_folder(self):
-        """Open folder dialog for choosing folder of notebooks."""
+        """Open folder dialog for choosing folder of notebooks or source files."""
         init_dir = get_last_notebook_folder()
         chosen = filedialog.askdirectory(
-            title="Select Folder Containing Notebooks",
+            title="Select Folder Containing Source Files",
             initialdir=init_dir,
         )
         if chosen:
@@ -426,12 +434,12 @@ class App(ctk.CTk):
         if is_single:
             nb_file_str = self.single_entry.get().strip()
             if not nb_file_str or not Path(nb_file_str).is_file():
-                self._log("❌ Error: Please select a valid .ipynb notebook file.")
+                self._log("❌ Error: Please select a valid source file (.ipynb, .sql, or .py).")
                 return
         else:
             batch_folder_str = self.batch_entry.get().strip()
             if not batch_folder_str or not Path(batch_folder_str).is_dir():
-                self._log("❌ Error: Please select a valid notebook folder.")
+                self._log("❌ Error: Please select a valid folder containing source files.")
                 return
 
         # Disable button & start thread
@@ -445,7 +453,7 @@ class App(ctk.CTk):
         thread.start()
 
     def _process_worker(self):
-        """Worker thread executing notebook parsing, semantic routing, AI synthesis, and saving."""
+        """Worker thread executing source parsing, semantic routing, AI synthesis, and saving."""
         try:
             vault_root = Path(self.vault_entry.get().strip())
             # Find base vault root for 99_Assets
@@ -466,8 +474,12 @@ class App(ctk.CTk):
             if is_single:
                 target_file = Path(self.single_entry.get().strip())
                 parent_dir = target_file.parent
-                all_in_folder = list(parent_dir.glob("*.ipynb"))
-                pairs = find_notebook_pairs(all_in_folder)
+                all_in_folder = (
+                    list(parent_dir.glob("*.ipynb")) +
+                    list(parent_dir.glob("*.sql")) +
+                    list(parent_dir.glob("*.py"))
+                )
+                pairs = find_source_pairs(all_in_folder)
                 
                 target_pair = None
                 for p in pairs:
@@ -475,9 +487,13 @@ class App(ctk.CTk):
                         target_pair = p
                         break
                 if not target_pair:
+                    ext = target_file.suffix.lower()
+                    file_type = "notebook" if ext == ".ipynb" else "sql" if ext == ".sql" else "python"
                     target_pair = {
                         "display_name": target_file.stem.replace("_", " ").title(),
                         "is_pair": False,
+                        "file_type": file_type,
+                        "extension": ext,
                         "exercise_path": None,
                         "solution_path": target_file,
                         "primary_path": target_file,
@@ -486,10 +502,14 @@ class App(ctk.CTk):
                 items_to_process = [target_pair]
             else:
                 batch_dir = Path(self.batch_entry.get().strip())
-                self._set_status(f"Scanning notebooks in {batch_dir.name}...")
-                all_nbs = list(batch_dir.glob("**/*.ipynb"))
-                items_to_process = find_notebook_pairs(all_nbs)
-                self._log(f"Found {len(all_nbs)} notebooks, grouped into {len(items_to_process)} note entities.")
+                self._set_status(f"Scanning source files in {batch_dir.name}...")
+                all_sources = (
+                    list(batch_dir.glob("**/*.ipynb")) +
+                    list(batch_dir.glob("**/*.sql")) +
+                    list(batch_dir.glob("**/*.py"))
+                )
+                items_to_process = find_source_pairs(all_sources)
+                self._log(f"Found {len(all_sources)} source files, grouped into {len(items_to_process)} note entities.")
 
             total_items = len(items_to_process)
             completed_count = 0
@@ -499,7 +519,9 @@ class App(ctk.CTk):
                 primary_file = item["primary_path"]
                 exercise_file = item.get("exercise_path")
                 solution_file = item.get("solution_path") or primary_file
+                file_type = item.get("file_type", "notebook")
 
+                icon = "🐬" if file_type == "sql" else "🐍" if file_type == "python" else "📓"
                 file_hash = get_file_hash(primary_file)
 
                 # Check checkpoint
@@ -510,16 +532,16 @@ class App(ctk.CTk):
                     continue
 
                 self._set_status(f"Processing ({idx+1}/{total_items}): {display_name}")
-                self._log(f"\n▶ [{idx+1}/{total_items}] Ingesting: {display_name}")
-                if item.get("is_pair"):
+                self._log(f"\n▶ [{idx+1}/{total_items}] {icon} Ingesting: {display_name} ({solution_file.name})")
+                if item.get("is_pair") and exercise_file:
                     self._log(f"   Paired: {exercise_file.name} ↔ {solution_file.name}")
 
-                # 1. Parse notebooks
-                sol_data = parse_notebook(solution_file)
-                ex_data = parse_notebook(exercise_file) if exercise_file and exercise_file != solution_file else None
+                # 1. Parse source files
+                sol_data = parse_source_file(solution_file)
+                ex_data = parse_source_file(exercise_file) if exercise_file and exercise_file != solution_file else None
 
                 # 2. Extract and save embedded plot images
-                all_images = sol_data["images"] + (ex_data["images"] if ex_data else [])
+                all_images = sol_data.get("images", []) + (ex_data.get("images", []) if ex_data else [])
                 if all_images:
                     saved_names = save_extracted_images(all_images, vault_root)
                     self._log(f"   🖼️ Saved {len(saved_names)} plot figures to 99_Assets/")
@@ -534,7 +556,12 @@ class App(ctk.CTk):
                         preview_text += " ".join(c.get("content", "") for c in ex_data["cells"][:3] if c["type"] == "markdown")
                     if sol_data.get("cells"):
                         preview_text += " ".join(c.get("content", "") for c in sol_data["cells"][:3] if c["type"] == "markdown")
-                    target_folder = smart_semantic_route(vault_root, sol_data["suggested_title"], preview_text)
+                    target_folder = smart_semantic_route(
+                        vault_path=vault_root,
+                        notebook_title=sol_data["suggested_title"],
+                        notebook_content_preview=preview_text,
+                        file_type=file_type,
+                    )
                     rel_target = target_folder.relative_to(vault_root) if target_folder != vault_root else "Root"
                     self._log(f"   🧭 Auto-Routed Destination: {rel_target}")
                 else:
@@ -577,10 +604,12 @@ class App(ctk.CTk):
                     )
                     self._log(f"   ✅ Merged & Updated: {final_path.name}")
                 else:
-                    self._log(f"   ✨ Synthesizing new CS50 study note...")
+                    source_desc = "SQL note" if file_type == "sql" else "Python note" if file_type == "python" else "notebook note"
+                    self._log(f"   ✨ Synthesizing new CS50 study note ({source_desc})...")
+                    system_prompt = get_system_prompt_for_file(file_type)
                     messages = [
-                        {"role": "system", "content": get_colab_system_prompt()},
-                        {"role": "user", "content": f"Transform this notebook into Obsidian study notes:\n\n{payload}"}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Transform this source file into Obsidian study notes:\n\n{payload}"}
                     ]
                     raw_notes = self._ai_client.generate_chat_completion(
                         messages=messages,
